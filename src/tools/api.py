@@ -2,6 +2,9 @@ import os
 import pandas as pd
 import requests
 
+import yfinance as yf
+from datetime import datetime, timedelta
+
 from data.cache import get_cache
 from data.models import (
     CompanyNews,
@@ -20,7 +23,7 @@ from data.models import (
 _cache = get_cache()
 
 
-def get_prices(ticker: str, start_date: str, end_date: str) -> list[Price]:
+def get_prices_fd(ticker: str, start_date: str, end_date: str) -> list[Price]:
     """Fetch price data from cache or API."""
     # Check cache first
     if cached_data := _cache.get_prices(ticker):
@@ -50,6 +53,42 @@ def get_prices(ticker: str, start_date: str, end_date: str) -> list[Price]:
     _cache.set_prices(ticker, [p.model_dump() for p in prices])
     return prices
 
+def get_prices(ticker: str, start_date: str, end_date: str) -> list[Price]:
+    """Fetch price data from cache or API."""
+    # Check cache first
+    if cached_data := _cache.get_prices(ticker):
+        # Filter cached data by date range and convert to Price objects
+        filtered_data = [Price(**price) for price in cached_data if start_date <= price["time"] <= end_date]
+        if filtered_data:
+            return filtered_data
+
+    # If not in cache or no data in range, fetch from API
+    end_date = datetime.strptime(end_date, "%Y-%m-%d")
+    end_date += timedelta(days=1)
+    yf_data = yf.download(ticker, start=start_date, end=end_date, interval="1d")
+    response_json = {"ticker": ticker, "prices": []}
+    for index, row in yf_data.iterrows():
+        price = {
+            "ticker": ticker,
+            "open": row["Open"].item(),
+            "close": row["Close"].item(),
+            "high": row["High"].item(),
+            "low": row["Low"].item(),
+            "volume": row["Volume"].item(),
+            "time": index.strftime("%Y-%m-%d")+"T05:00:00Z",
+        }
+        response_json["prices"].append(price)
+
+    # Parse response with Pydantic model
+    price_response = PriceResponse(**response_json)
+    prices = price_response.prices
+
+    if not prices:
+        return []
+
+    # Cache the results as dicts
+    _cache.set_prices(ticker, [p.model_dump() for p in prices])
+    return prices
 
 def get_financial_metrics(
     ticker: str,
